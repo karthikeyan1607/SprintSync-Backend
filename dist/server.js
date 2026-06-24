@@ -60,111 +60,49 @@ app.post('/api/validateAzureSettings', (req, res) => {
  * Endpoint: POST /api/testConnection
  */
 app.post('/api/testConnection', async (req, res) => {
-  const { orgName, projectName, personalAccessToken } = req.body;
-
-  const pat =
-    personalAccessToken ||
-    process.env.AZURE_DEVOPS_PAT;
-
-  if (!orgName || !projectName) {
-    return res.status(400).json({
-      success: false,
-      error: 'orgName and projectName are required.',
-    });
-  }
-
-  if (!pat) {
-    return res.json({
-      success: true,
-      simulated: true,
-      message:
-        'PAT not supplied. Running in simulation mode.',
-    });
-  }
-
-  try {
-    const b64Token = Buffer
-      .from(`:${pat}`)
-      .toString('base64');
-
-    const url =
-      `https://dev.azure.com/${encodeURIComponent(orgName)}/_apis/projects?api-version=7.1`;
-
-    console.log('========================');
-    console.log('TEST CONNECTION');
-    console.log('URL:', url);
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Basic ${b64Token}`,
-        Accept: 'application/json',
-      },
-    });
-
-    const contentType =
-      response.headers.get('content-type') || '';
-
-    const body = await response.text();
-
-    console.log('STATUS:', response.status);
-    console.log('CONTENT TYPE:', contentType);
-    console.log(
-      'BODY:',
-      body.substring(0, 500)
-    );
-
-    if (!contentType.includes('application/json')) {
-      return res.status(500).json({
-        success: false,
-        error:
-          'Azure DevOps returned a non-JSON response.',
-        status: response.status,
-        contentType,
-        responseSnippet:
-          body.substring(0, 500),
-      });
+    const { orgName, projectName, personalAccessToken } = req.body;
+    const pat = personalAccessToken || process.env.AZURE_DEVOPS_PAT;
+    if (!orgName || !projectName) {
+        res.status(400).json({ success: false, error: 'orgName and projectName are required.' });
+        return;
     }
-
-    const data = JSON.parse(body);
-
-    const projects = data.value || [];
-
-    const matchedProject =
-      projects.find(
-        (p: any) =>
-          p.name.toLowerCase() ===
-          projectName.toLowerCase()
-      );
-
-    if (!matchedProject) {
-      return res.status(404).json({
-        success: false,
-        error: `Project '${projectName}' not found in organization '${orgName}'.`,
-      });
+    // If no live PAT is configured, we provide a clean, secure sandbox response
+    if (!pat) {
+        console.log(`[testConnection] Running in Simulated mode (AZURE_DEVOPS_PAT is not set).`);
+        // Simulating a perfect handshake
+        setTimeout(() => {
+            res.json({
+                success: true,
+                simulated: true,
+                message: 'Sandbox handshake successful. DevOps endpoints will run in simulated planning mode.',
+            });
+        }, 600);
+        return;
     }
-
-    return res.json({
-      success: true,
-      projectName: matchedProject.name,
-      projectId: matchedProject.id,
-      message:
-        'Azure DevOps connection successful.',
-    });
-
-  } catch (err: any) {
-    console.error(
-      '[testConnection]',
-      err
-    );
-
-    return res.status(500).json({
-      success: false,
-      error:
-        err.message ||
-        'Unknown server error.',
-    });
-  }
+    try {
+        const b64Token = base64Encode(`:${pat}`);
+        // Attempt standard project metadata fetching from ADO REST API
+        const response = await fetch(`https://dev.azure.com/${encodeURIComponent(orgName)}/_apis/projects/${encodeURIComponent(projectName)}?api-version=7.1-preview.4`, {
+            headers: {
+                'Authorization': `Basic ${b64Token}`,
+                'Accept': 'application/json',
+            },
+        });
+        if (response.ok) {
+            const data = await response.json();
+            res.json({ success: true, projectName: data.name, projectId: data.id });
+        }
+        else {
+            const errorText = await response.text();
+            res.status(response.status).json({
+                success: false,
+                error: `Azure DevOps returned ${response.status}: ${errorText || 'Unauthorized or Project Not Found'}`,
+            });
+        }
+    }
+    catch (error) {
+        res.status(500).json({ success: false, error: error.message || 'Network exception connecting to Azure DevOps' });
+    }
 });
 /**
  * Endpoint: POST /api/createStories
